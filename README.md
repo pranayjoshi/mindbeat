@@ -10,3 +10,4 @@ App for Hack UGA
 * ```git add .```
 * ```git commit -m "<dhang ka message>"```
 * ```git push```
+### Des

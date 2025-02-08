@@ -191,6 +191,7 @@ def main():
     st.sidebar.title("Logs")
     logs_placeholder = st.sidebar.empty()
 
+    # Load model
     try:
         model_path = "EmotionNetV2.h5"
         for test_samples in [256, 384, 512, 768]:
@@ -206,23 +207,21 @@ def main():
     except Exception as e:
         print(f"Error: {str(e)}")
 
+    # Connect to EEG stream
     print('Looking for an EEG stream...')
     logs_placeholder.text(print_capture.get_logs()) 
     streams = resolve_byprop('type', 'EEG', timeout=2)
     if len(streams) == 0:
         raise RuntimeError('Can\'t find EEG stream.')
-
-
     print("Start acquiring data")
     logs_placeholder.text(print_capture.get_logs()) 
     inlet = StreamInlet(streams[0], max_buflen=60, max_chunklen=int(inputLength))
     eeg_time_correction = inlet.time_correction()
-
     info = inlet.info()
     description = info.desc()
     fs = int(info.nominal_srate())
 
-
+    # Print stream info placeholders for iterator
     print("Stream connected.")
     print("Sampling frequency: {} points per second".format(fs))
     print("Processing Muse EEG data...\n")
@@ -230,48 +229,30 @@ def main():
     plot_placeholder = st.empty()
     final_plot_placeholder = st.empty()
     iterEEG(inlet, plot_placeholder, logs_placeholder, final_plot_placeholder=final_plot_placeholder)
-
     fs = int(info.nominal_srate())
     print("Sampling frequency: {} Hz".format(fs))
 
 
-    img = plt.imread("EmotionSpace.png")
-    width = img.shape[1]
-    height = img.shape[0]
-    centerX = int(width / 2) -8
-    centerY = int(height / 2) +8
-    pixPerValence = centerX / 5
-    pixPerArousal = centerY / 5
+    # Final Emotion Detection
     try:
-        # Pull final batch of EEG data
+        # preprocess EEG data
         data, timestamp = inlet.pull_chunk(timeout=5, max_samples=samples)
         eeg = np.array(data).swapaxes(0,1)
-
-        # Downsample
         processedEEG = signal.resample(eeg, int(eeg.shape[1] * (128 / fs)), axis=1)
-
-        # Apply bandpass filter from 4-45Hz
         processedEEG = mne.filter.filter_data(processedEEG, sfreq=128, l_freq=4, h_freq=45, 
                                             filter_length='auto', l_trans_bandwidth='auto', 
                                             h_trans_bandwidth='auto', method='fir', 
                                             phase='zero', fir_window='hamming', verbose=0)
-
-        # Zero mean
         processedEEG -= np.mean(processedEEG, axis=1, keepdims=True)
-
         print(processedEEG)
-
-        # Update buffer
         for channel in range(buffers.shape[0]):
             buffers[channel] = updateBuffer(buffers[channel], processedEEG[channel])
-
-        # Perform emotion regression analysis
         chunk_size = 256
-        num_chunks = buffers.shape[1] // chunk_size  # Total full chunks
+        num_chunks = buffers.shape[1] // chunk_size
+
 
         # Store predictions
         emotion_predictions = []
-
         for i in range(num_chunks):
             start = i * chunk_size
             end = start + chunk_size
@@ -280,30 +261,23 @@ def main():
             input_data = buffers[:, start:end]  # Shape (4, 256)
             input_data = np.expand_dims(input_data, axis=0)  # Shape (1, 4, 256)
 
-            # Predict emotions for this chunk
+            # Predict and log emotions for this chunk
             emotions = model.predict(input_data)
             print("Emotions:", emotions)
             emotions = scale_emotions(emotions)
-
-            # Print raw and scaled emotions for debugging
             print("Raw emotions:", emotions)
             print("Scaled emotions:", emotions)
-            logs_placeholder.text(print_capture.get_logs()) 
-            
-            # Ensure emotions has correct shape
+            logs_placeholder.text(print_capture.get_logs())
+
             if emotions.ndim == 1:
-                emotions = emotions.reshape(1, -1)  # Convert to (1, 3) if scalar
+                emotions = emotions.reshape(1, -1)
             elif emotions.shape[-1] != 3:
                 print("Unexpected model output shape:", emotions.shape)
                 continue
-
-            emotions = np.clip(emotions, 1, 9)  # Clip outliers
-
-            emotion_predictions.append(emotions[0])  # Store predictions
+            emotions = np.clip(emotions, 1, 9)
+            emotion_predictions.append(emotions[0])
 
         # Ensure we have valid predictions
-        if emotion_predictions:
-            # Compute mean across all chunks
             mean_emotions = np.mean(emotion_predictions, axis=0)
 
             valence = mean_emotions[0]
@@ -319,18 +293,8 @@ def main():
         # Determine mood
         end_mood = determine_mood(valence, arousal, dominance)
         print("End Mood:", end_mood)
-        x = valence * pixPerValence
-        y = (10 - arousal) * pixPerArousal
 
-        # clear_output(wait=True)
-        plt.figure(figsize=(10,10))
-        plt.imshow(img)
 
-        plt.plot(x, y, color='red', marker='o', markersize=36)
-        plt.show()
-        # plt.show(block=False)
-        # plt.pause(3)
-        # plt.close()
         logs_placeholder.text(print_capture.get_logs()) 
         st.markdown(f"## End Mood: **{end_mood}**")
         st.markdown(f"### Valence: **{valence:.2f}**")

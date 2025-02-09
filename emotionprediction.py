@@ -1,5 +1,7 @@
 from io import StringIO
 import sys
+from time import sleep
+from gpt import get_song_recommendation
 import streamlit as st
 import tensorflow as tf
 from tensorflow import keras
@@ -8,8 +10,19 @@ import matplotlib.pyplot as plt
 import os
 from pylsl import StreamInlet, resolve_byprop
 from scipy import signal, stats
+from emotionutils import load_h5_model, updateBuffer, scale_emotions, determine_mood, iterEEG
 import mne
-import time
+
+
+fs = 256
+inputLength = 10.5 # Length of input in seconds
+shiftLength = 5 # Time between epochs
+samples = int(shiftLength * fs) # How many samples to gather in every cycle
+# print(samples)
+
+bufferSize = int(128 * inputLength) # Size of buffer in samples. Enough to hold one set of downsampled input.
+
+buffers = np.zeros((4, bufferSize)) # buffers for each of the four channels
 
 class PrintToStreamlit:
     def __init__(self):
@@ -28,163 +41,146 @@ class PrintToStreamlit:
 print_capture = PrintToStreamlit()
 sys.stdout = print_capture
 
-def calculate_output_shape(input_shape, model):
-    """
-    Print the output shape of each layer to debug dimension issues
-    """
-    x = tf.zeros((1,) + input_shape)
-    for layer in model.layers:
-        x = layer(x)
-        # print(f"{layer.name}: output_shape = {x.shape}")
-    return x.shape
+# Page configuration
+st.set_page_config(
+    page_title="AI Lyric Visualizer",
+    page_icon="🎵",
+    layout="wide",
+)
 
-def load_h5_model(model_path, desiredSamples):
-    """
-    Load H5 model with shape debugging
-    """
+# Initialize session state for page navigation
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
 
-    # Create model
-    model = keras.Sequential([
-        # Input layer
-        keras.layers.InputLayer(input_shape=(4, desiredSamples)),
-        keras.layers.Reshape((4, desiredSamples, 1), name='reshape'),
+def navigate_to_dashboard():
+    st.session_state.page = 'dashboard'
 
-        # First Conv Block
-        keras.layers.Conv2D(32, (1, 4), strides=(1,1), activation='relu', padding='same', name='conv1'),
-        keras.layers.MaxPooling2D((1, 2), name='pool1'),
+def navigate_to_playlist():
+    st.session_state.page = 'playlist'
 
-        # Second Conv Block
-        keras.layers.Conv2D(64, (1, 8), strides=(1,1), activation='relu', padding='same', name='conv2'),
-        keras.layers.MaxPooling2D((1, 2), name='pool2'),
+def Home():
+    st.markdown(
+        """
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
 
-        # Third Conv Block
-        keras.layers.Conv2D(64, (1, 8), strides=(1,1), activation='relu', padding='same', name='conv3'),
-        keras.layers.MaxPooling2D((1, 2), name='pool3'),
+            .main {
+                background-color: #0A0A0A;
+                color: #FFFFFF;
+                font-family: 'Inter', sans-serif;
+            }
 
-        # Fourth Conv Block
-        keras.layers.Conv2D(64, (1, 64), strides=(1,1), activation='relu', padding='same', name='conv4'),
-        keras.layers.MaxPooling2D((1, 2), name='pool4'),
+            .top-left {
+                position: absolute;
+                top: 20px;
+                left: 20px;
+                display: flex;
+                align-items: center;
+            }
+            .top-left img {
+                height: 60px;
+                weight: 60px;
+                margin-bottom: 20px;
+                margin-right: 10px;
+            }
+            .top-left .name {
+                font-size: 1.5rem;
+                font-weight: 700;
+                color: #FFFFFF;
+            }
 
-        # Fifth Conv Layer
-        keras.layers.Conv2D(64, (1, 8), strides=(1,1), activation='relu', padding='same', name='conv5'),
+            .center-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: calc(70vh - 100px);
+                padding: 2rem;
+                text-align: center;
+                position: relative;
+                overflow: hidden;
+            }
 
-        # Output layers
-        keras.layers.Flatten(name='flatten'),
-        keras.layers.Dense(64, activation='relu', name='dense1'),
-        keras.layers.Dense(3, activation='linear', name='dense2')
-    ])
+            .header2 {
+                font-size: 3.8rem;
+                font-weight: 800;
+                background: linear-gradient(90deg, #9333E0, #C026D3);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 1.5rem;
+            }
 
-    final_shape = calculate_output_shape((4, desiredSamples), model)
-    try:
-        # Try loading weights
-        model.load_weights(model_path, by_name=True, skip_mismatch=True)
+            .subheader {
+                font-size: 1.2rem;
+                color: #9CA3AF;
+                margin-bottom: 2rem;
+                max-width: 48rem;
+                line-height: 1.5;
+            }
 
-        print("\nModel loaded successfully!")
-        return model
-    except Exception as e:
-        print(f"\nDetailed error: {str(e)}")
-        raise Exception("Failed to load H5 model")
+            .floating-element {
+                position: absolute;
+                background-color: rgba(147, 51, 234, 0.3);
+                border-radius: 50%;
+                animation: float 15s infinite;
+            }
 
-#
-fs = 256
-inputLength = 10.5 # Length of input in seconds
-shiftLength = 5 # Time between epochs
-samples = int(shiftLength * fs) # How many samples to gather in every cycle
-# print(samples)
+            @keyframes float {
+                0% { transform: translate(0, 0) rotate(0deg); }
+                33% { transform: translate(30px, -50px) rotate(120deg); }
+                66% { transform: translate(-20px, 20px) rotate(240deg); }
+                100% { transform: translate(0, 0) rotate(360deg); }
+            }
 
-bufferSize = int(128 * inputLength) # Size of buffer in samples. Enough to hold one set of downsampled input.
+            /* Align Streamlit button */
+            div.stButton > button {
+                background: linear-gradient(90deg, #9333EA 0%, #C026D3 100%);
+                color: white;
+                border-radius: 8px;
+                padding: 0.75rem 2rem;
+                border: none;
+                font-size: 1.125rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                text-decoration: none;
+                display: inline-block;
+                margin-top: 10px;
+                box-shadow: 0 4px 14px rgba(147, 51, 234, 0.3);
+            }
+            div.stButton > button:hover {
+                opacity: 0.9;
+                transform: translateY(-2px);
+            }
+        </style>
+        
+        <div class="top-left">
+            <img src="https://github.com/pranayjoshi/mind_music/blob/main/log.png?raw=true">
+            <div class="header2">MindBeats</div>
+        </div>
+        
+        <div class="center-container">
+            <div class="floating-element" style="width: 100px; height: 100px; top: 10%; left: 10%;"></div>
+            <div class="floating-element" style="width: 50px; height: 50px; top: 20%; right: 20%;"></div>
+            <div class="floating-element" style="width: 75px; height: 75px; bottom: 15%; left: 15%;"></div>
+            <div class="header2">Neuroadaptive Music Recommendation</div>
+            <div class="subheader">Experience the future of music with MindBeats.
+            Our BCI headset reads your emotions in real-time, creating perfectly curated playlists that match your mood.
+            As your emotions evolve, our AI adapts your music dynamically, learning your preferences to deliver an ever-improving, personalized listening experience.</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-buffers = np.zeros((4, bufferSize)) # buffers for each of the four channels
-
-# Push new data onto buffer, removing any old data on the end
-def updateBuffer(buffer, newData):
-    assert len(newData.shape) == len(buffer.shape) and buffer.shape[0] >= newData.shape[0], "Buffer shape ({}) and new data shape ({}) are not compatible.".format(buffer.shape, newData.shape)
-    size = newData.shape[0]
-    buffer[:-size] = buffer[size:]
-    buffer[-size:] = newData
-    return buffer
-# Get the streamed data from the Muse. Blue Muse must be streaming.
-
-
-
-
-def iterEEG(inlet, plot_placeholder, logs_placeholder, final_plot_placeholder):
-    for i in range(4):
-        start = time.time()
-        data, timestamp = inlet.pull_chunk(timeout=5, max_samples=samples)
-        t = time.time() - start
-        eeg = np.array(data).swapaxes(0,1)
-
-        # Downsample
-        processedEEG = signal.resample(eeg, int(eeg.shape[1] * (128 / fs)), axis=1)
-
-        # Apply bandpass filter from 4-45Hz
-        processedEEG = mne.filter.filter_data(processedEEG, sfreq=128, l_freq=4, h_freq=45, 
-                                        filter_length='auto', l_trans_bandwidth='auto', 
-                                        h_trans_bandwidth='auto', method='fir', 
-                                        phase='zero', fir_window='hamming', verbose=0)
-
-        # Zero mean
-        processedEEG -= np.mean(processedEEG, axis=1, keepdims=True)
-        if i == 0:
-            continue
-
-        print("Got {} samples in {:.5f} seconds".format(len(data), t))
-        logs_placeholder.text(print_capture.get_logs()) 
-        # Update buffer
-        for channel in range(buffers.shape[0]):
-            buffers[channel] = updateBuffer(buffers[channel], processedEEG[channel])
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(buffers[0], label="Tp9")
-        ax.plot(buffers[1], label="AF7")
-        ax.plot(buffers[2], label="AF8")
-        ax.plot(buffers[3], label="Tp10")
-        ax.legend()
-        plot_placeholder.pyplot(fig)
-
-    print("Record Brain waves Iteration end!")
-    ax, plti  = plt.subplots(figsize=(10, 5))
-    plti.plot(buffers[0,:256], label="Tp9")
-    plti.plot(buffers[1,:256], label="AF7")
-    plti.plot(buffers[2,:256], label="AF8")
-    plti.plot(buffers[3,:256], label="Tp10")
-    plti.legend()
-    final_plot_placeholder.pyplot(ax)
-
-    print("Final Plot Plotted")
-
-def determine_mood(valence, arousal, dominance):
-    if valence >= 5 and arousal >= 5:
-        if dominance >= 5:
-            return "Mildly Positive & Confident"
-        else:
-            return "Slightly Positive but Hesitant"
-    elif valence >= 5 and arousal < 5:
-        if dominance >= 5:
-            return "Calm & Neutral"
-        else:
-            return "Relaxed but Withdrawn"
-    elif valence < 5 and arousal >= 5:
-        if dominance >= 5:
-            return "Frustrated but Assertive"
-        else:
-            return "Stressed & Overwhelmed"
-    else:  # valence < 5 and arousal < 5
-        if dominance >= 5:
-            return "Indifferent & Passive"
-        else:
-            return "Sad & Low Energy"
+    # Place the button right below the content
+    col1, col2, col3 = st.columns([3, 2, 2])
+    with col2:
+        if st.button("Get Started ⚡"):
+            navigate_to_dashboard()
 
 
+def dashboard():
 
-# Example scaling function
-def scale_emotions(emotions, target_min=1, target_max=9):
-    source_min, source_max = -1, 1
-    scaled_emotions = (emotions - source_min) * (target_max - target_min) / (source_max - source_min) + target_min
-    return scaled_emotions
-
-def main():
     st.title("EEG Emotion Prediction with BCI")
     st.write("This app predicts emotions based on EEG data from a MUSE 2 headset.")
     # Sidebar for logs
@@ -227,84 +223,164 @@ def main():
     print("Processing Muse EEG data...\n")
     logs_placeholder.text(print_capture.get_logs()) 
     plot_placeholder = st.empty()
-    final_plot_placeholder = st.empty()
-    iterEEG(inlet, plot_placeholder, logs_placeholder, final_plot_placeholder=final_plot_placeholder)
+    iterEEG(inlet, plot_placeholder, logs_placeholder)
     fs = int(info.nominal_srate())
     print("Sampling frequency: {} Hz".format(fs))
+    data, timestamp = inlet.pull_chunk(timeout=5, max_samples=samples)
+    eeg = np.array(data).swapaxes(0,1)
+    processedEEG = signal.resample(eeg, int(eeg.shape[1] * (128 / fs)), axis=1)
+    processedEEG = mne.filter.filter_data(processedEEG, sfreq=128, l_freq=4, h_freq=45, 
+                                        filter_length='auto', l_trans_bandwidth='auto', 
+                                        h_trans_bandwidth='auto', method='fir', 
+                                        phase='zero', fir_window='hamming', verbose=0)
+    processedEEG -= np.mean(processedEEG, axis=1, keepdims=True)
+    print(processedEEG)
+    for channel in range(buffers.shape[0]):
+        buffers[channel] = updateBuffer(buffers[channel], processedEEG[channel])
+    chunk_size = 256
+    num_chunks = buffers.shape[1] // chunk_size
 
 
-    # Final Emotion Detection
-    try:
-        # preprocess EEG data
-        data, timestamp = inlet.pull_chunk(timeout=5, max_samples=samples)
-        eeg = np.array(data).swapaxes(0,1)
-        processedEEG = signal.resample(eeg, int(eeg.shape[1] * (128 / fs)), axis=1)
-        processedEEG = mne.filter.filter_data(processedEEG, sfreq=128, l_freq=4, h_freq=45, 
-                                            filter_length='auto', l_trans_bandwidth='auto', 
-                                            h_trans_bandwidth='auto', method='fir', 
-                                            phase='zero', fir_window='hamming', verbose=0)
-        processedEEG -= np.mean(processedEEG, axis=1, keepdims=True)
-        print(processedEEG)
-        for channel in range(buffers.shape[0]):
-            buffers[channel] = updateBuffer(buffers[channel], processedEEG[channel])
-        chunk_size = 256
-        num_chunks = buffers.shape[1] // chunk_size
+    # Store predictions
+    emotion_predictions = []
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+
+        # Extract chunk and reshape for the model
+        input_data = buffers[:, start:end]  # Shape (4, 256)
+        input_data = np.expand_dims(input_data, axis=0)  # Shape (1, 4, 256)
+
+        # Predict and log emotions for this chunk
+        emotions = model.predict(input_data)
+        print("Emotions:", emotions)
+        emotions = scale_emotions(emotions)
+        print("Raw emotions:", emotions)
+        print("Scaled emotions:", emotions)
+        logs_placeholder.text(print_capture.get_logs())
+
+        if emotions.ndim == 1:
+            emotions = emotions.reshape(1, -1)
+        elif emotions.shape[-1] != 3:
+            print("Unexpected model output shape:", emotions.shape)
+            continue
+        emotions = np.clip(emotions, 1, 9)
+        emotion_predictions.append(emotions[0])
+
+    # Ensure we have valid predictions
+        mean_emotions = np.mean(emotion_predictions, axis=0)
+
+        valence = mean_emotions[0]
+        arousal = mean_emotions[1]
+        dominance = mean_emotions[2]
+
+    print("Final Emotion Averages:")
+    print("Valence: {:.2f}".format(valence))
+    print("Arousal: {:.2f}".format(arousal))
+    print("Dominance: {:.2f}".format(dominance))
+    logs_placeholder.text(print_capture.get_logs()) 
+
+    # Determine mood
+    end_mood = determine_mood(valence, arousal, dominance)
+    print("End Mood:", end_mood)
 
 
-        # Store predictions
-        emotion_predictions = []
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = start + chunk_size
-
-            # Extract chunk and reshape for the model
-            input_data = buffers[:, start:end]  # Shape (4, 256)
-            input_data = np.expand_dims(input_data, axis=0)  # Shape (1, 4, 256)
-
-            # Predict and log emotions for this chunk
-            emotions = model.predict(input_data)
-            print("Emotions:", emotions)
-            emotions = scale_emotions(emotions)
-            print("Raw emotions:", emotions)
-            print("Scaled emotions:", emotions)
-            logs_placeholder.text(print_capture.get_logs())
-
-            if emotions.ndim == 1:
-                emotions = emotions.reshape(1, -1)
-            elif emotions.shape[-1] != 3:
-                print("Unexpected model output shape:", emotions.shape)
-                continue
-            emotions = np.clip(emotions, 1, 9)
-            emotion_predictions.append(emotions[0])
-
-        # Ensure we have valid predictions
-            mean_emotions = np.mean(emotion_predictions, axis=0)
-
-            valence = mean_emotions[0]
-            arousal = mean_emotions[1]
-            dominance = mean_emotions[2]
-
-        print("Final Emotion Averages:")
-        print("Valence: {:.2f}".format(valence))
-        print("Arousal: {:.2f}".format(arousal))
-        print("Dominance: {:.2f}".format(dominance))
-        logs_placeholder.text(print_capture.get_logs()) 
-
-        # Determine mood
-        end_mood = determine_mood(valence, arousal, dominance)
-        print("End Mood:", end_mood)
-
-
-        logs_placeholder.text(print_capture.get_logs()) 
-        st.markdown(f"## End Mood: **{end_mood}**")
+    logs_placeholder.text(print_capture.get_logs()) 
+    st.markdown(f"## End Mood: **{end_mood}**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
         st.markdown(f"### Valence: **{valence:.2f}**")
+    with col2:
         st.markdown(f"### Arousal: **{arousal:.2f}**")
+    with col3:
         st.markdown(f"### Dominance: **{dominance:.2f}**")
-    finally:
-        
-        
-        inlet.close_stream()
-        print("Stream closed.")
 
-if __name__ == "__main__":
-    main()
+    recommendations = get_song_recommendation(end_mood)
+    print("\n".join(recommendations))
+    logs_placeholder.text(print_capture.get_logs())
+    # Add a button to navigate to the playlist page
+    inlet.close_stream()
+    print("Stream closed.")
+    logs_placeholder.text(print_capture.get_logs())
+    sleep(2)
+    st.markdown("<div style='height: 200px;'></div>", unsafe_allow_html=True)  # Add space before the playlist
+    st.title("Your Playlist")
+    st.write("Here are your recommended songs:")
+
+    # Example list of songs with Spotify and YouTube links
+    songs = recommendations
+
+    st.markdown(
+        """
+        <style>
+            .playlist-container {
+                padding-top: 50px;
+            }
+            .playlist-table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            .playlist-table th, .playlist-table td {
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: center;
+            }
+            .playlist-table th {
+                padding-top: 12px;
+                padding-bottom: 12px;
+                background-color: #4CAF50;
+                color: white;
+            }
+            .playlist-table td a {
+                text-decoration: none;
+                color: white;
+            }
+            .playlist-table td button {
+                background: linear-gradient(90deg, #1DB954 0%, #1DB954 100%);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                cursor: pointer;
+                transition: all 0.3s ease;
+            }
+            .playlist-table td button:hover {
+                opacity: 0.9;
+            }
+            .playlist-table td button.youtube {
+                background: linear-gradient(90deg, #FF0000 0%, #FF0000 100%);
+            }
+            .playlist-table td.song-title, .playlist-table td.actions {
+                width: 50%;
+            }
+        </style>
+        <table class="playlist-table">
+        """,
+        unsafe_allow_html=True
+    )
+
+    for song in songs:
+        st.markdown(
+            f"""
+            <tr>
+                <td class="song-title">{song}</td>
+                <td class="actions">
+                    <a href="" target="_blank">
+                        <button class="custom-button">Spotify</button>
+                    </a>
+                    <a href="" target="_blank">
+                        <button class="custom-button youtube">YouTube</button>
+                    </a>
+                </td>
+            </tr>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("</table>", unsafe_allow_html=True)
+
+
+if st.session_state.page == 'home':
+    Home()
+elif st.session_state.page == 'dashboard':
+    dashboard()

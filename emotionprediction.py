@@ -223,7 +223,10 @@ def dashboard():
     print("Processing Muse EEG data...\n")
     logs_placeholder.text(print_capture.get_logs()) 
     plot_placeholder = st.empty()
-    iterEEG(inlet, plot_placeholder, logs_placeholder)
+    with plot_placeholder:
+        with st.spinner('Processing Muse EEG data...'):
+            plot = iterEEG(inlet, plot_placeholder, logs_placeholder)
+    plot_placeholder.pyplot(plot)
     fs = int(info.nominal_srate())
     print("Sampling frequency: {} Hz".format(fs))
     data, timestamp = inlet.pull_chunk(timeout=5, max_samples=samples)
@@ -302,7 +305,8 @@ def dashboard():
     inlet.close_stream()
     print("Stream closed.")
     logs_placeholder.text(print_capture.get_logs())
-    sleep(2)
+    with st.spinner('Generating music playlist...'):
+        sleep(2)
     st.markdown("<div style='height: 200px;'></div>", unsafe_allow_html=True)  # Add space before the playlist
     st.title("Your Playlist")
     st.write("Here are your recommended songs:")

@@ -128,6 +128,7 @@ def iterEEG(inlet, plot_placeholder, logs_placeholder):
     plot_placeholder.pyplot(ax)
 
     print("Final Plot Plotted")
+    return ax
 
 def determine_mood(valence, arousal, dominance):
     if valence >= 5 and arousal >= 5:

@@ -1,3 +1,9 @@
+# Name of team members
+# purpose of proj
+# tools utilized
+# problem and how you overcame
+# must credit any public frameworks and api's
+
 # Readme
 App for Hack UGA
 

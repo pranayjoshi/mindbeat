@@ -1,6 +1,6 @@
 # Name of team members
 1:- Pranay Joshi <br>
-2:- Priyanshu Sethi <br>
+2:- Gaurav Shrivastava <br>
 3:- Kavya Gupta <br>
 4:- Priyanshu Sethi <br>
 

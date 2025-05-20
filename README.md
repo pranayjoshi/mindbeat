@@ -28,3 +28,5 @@ OpenAI, Muse
 * ```git add .```
 * ```git commit -m "<your-text>"```
 * ```git push```
+
+[Check out our Mind Beats project announcement on LinkedIn](https://www.linkedin.com/posts/pranay-joshi-_hackathon-ai-bci-activity-7294828653262102530-8nG-?utm_source=share&utm_medium=member_desktop&rcm=ACoAACv4_50BjQghzitL37otbIlcv3GVlCxaiCA)
